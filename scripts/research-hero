@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Install or maintain the Research HERO block in a project's AGENTS.md."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+
+BEGIN_PREFIX = "<!-- RESEARCH-HERO:BEGIN"
+END_MARKER = "<!-- RESEARCH-HERO:END -->"
+BLOCK_PATTERN = re.compile(
+    rf"^<!-- RESEARCH-HERO:BEGIN[^\n]*-->\n.*?^{re.escape(END_MARKER)}",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def profile_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "profiles" / "RESEARCH.md"
+
+
+def managed_block() -> str:
+    text = profile_path().read_text(encoding="utf-8")
+    matches = list(BLOCK_PATTERN.finditer(text))
+    if len(matches) != 1:
+        raise RuntimeError("profiles/RESEARCH.md must contain exactly one managed block")
+    return matches[0].group(0)
+
+
+def installed_matches(text: str) -> list[re.Match[str]]:
+    begin_count = text.count(BEGIN_PREFIX)
+    end_count = text.count(END_MARKER)
+    matches = list(BLOCK_PATTERN.finditer(text))
+    if begin_count != end_count or begin_count != len(matches):
+        raise ValueError("AGENTS.md contains malformed Research HERO markers")
+    if len(matches) > 1:
+        raise ValueError("AGENTS.md contains more than one Research HERO block")
+    return matches
+
+
+def write_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    fd, temporary_name = tempfile.mkstemp(prefix=".AGENTS.md.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        if previous_mode is not None:
+            os.chmod(temporary, previous_mode)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def install_or_update(agents_path: Path) -> str:
+    block = managed_block()
+    current = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
+    matches = installed_matches(current)
+
+    if matches:
+        match = matches[0]
+        updated = current[: match.start()] + block + current[match.end() :]
+        action = "unchanged" if updated == current else "updated"
+    elif current:
+        updated = block + "\n\n" + current
+        action = "installed"
+    else:
+        updated = block + "\n"
+        action = "installed"
+
+    if updated != current:
+        write_atomic(agents_path, updated)
+    return action
+
+
+def check(agents_path: Path) -> bool:
+    if not agents_path.exists():
+        return False
+    current = agents_path.read_text(encoding="utf-8")
+    matches = installed_matches(current)
+    return len(matches) == 1 and matches[0].group(0) == managed_block()
+
+
+def remove(agents_path: Path) -> str:
+    if not agents_path.exists():
+        return "absent"
+    current = agents_path.read_text(encoding="utf-8")
+    matches = installed_matches(current)
+    if not matches:
+        return "absent"
+
+    match = matches[0]
+    before = current[: match.start()]
+    after = current[match.end() :]
+    if not before and after.startswith("\n\n"):
+        after = after[2:]
+    elif not before and after == "\n":
+        after = ""
+    updated = before + after
+    write_atomic(agents_path, updated)
+    return "removed"
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(
+        description="Manage the project-level Research HERO block in AGENTS.md."
+    )
+    result.add_argument("command", choices=("install", "update", "check", "remove"))
+    result.add_argument(
+        "project",
+        nargs="?",
+        default=".",
+        help="research project directory (default: current directory)",
+    )
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    project = Path(args.project).expanduser().resolve()
+    if not project.is_dir():
+        print(f"error: project directory does not exist: {project}", file=sys.stderr)
+        return 2
+
+    agents_path = project / "AGENTS.md"
+    try:
+        if args.command in {"install", "update"}:
+            action = install_or_update(agents_path)
+            print(f"{action}: {agents_path}")
+            return 0
+        if args.command == "check":
+            if check(agents_path):
+                print(f"current: {agents_path}")
+                return 0
+            print(f"missing or outdated: {agents_path}", file=sys.stderr)
+            return 1
+        action = remove(agents_path)
+        print(f"{action}: {agents_path}")
+        return 0
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
