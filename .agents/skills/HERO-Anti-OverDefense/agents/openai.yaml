@@ -1,0 +1,6 @@
+interface:
+  display_name: "HERO Anti OverDefense"
+  short_description: "Repo-specific patterns and workflows for HERO-Anti-OverDefense"
+  default_prompt: "Use the HERO-Anti-OverDefense repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
